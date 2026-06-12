@@ -219,8 +219,12 @@ These cost real debugging time; they're baked into the provided configs:
   zafro vhost as `listen 443 ssl default_server;` or it falls through to another vhost
   with strict ciphers and the handshake fails (a 7‑byte TLS alert).
 - **Ancient ciphers.** The AC offers only TLS 1.2 RSA‑CBC suites
-  (`AES256-SHA256`, `AES256-SHA`, …). Modern OpenSSL disables these, so the nginx vhost
-  pins `ssl_ciphers "AES256-SHA256:AES128-SHA256:AES256-SHA:AES128-SHA:@SECLEVEL=0"; ssl_protocols TLSv1.2;`.
+  (`AES256-SHA256`, `AES256-SHA`, …) which modern OpenSSL hides. The vhost re‑enables
+  them with `ssl_ciphers "DEFAULT:@SECLEVEL=0";` **without** dropping modern TLS — important
+  because, as the `default_server`, this block also terminates TLS for any client that
+  reaches the box with non‑matching SNI (e.g. a Cloudflare Tunnel / reverse proxy fronting
+  your other sites). If you instead pin it to legacy‑only ciphers, those other sites break
+  with 502s. Keep `ssl_protocols TLSv1.2 TLSv1.3;`.
 - **MQTT 3.1 + no WebSocket compression.** The AC speaks MQTT **3.1** ("MQIsdp", level 3,
   30 s keepalive) and requests `permessage-deflate` but cannot read compressed server
   frames — it CONNECTs then silently dies at the 30 s keepalive. The bridge therefore
