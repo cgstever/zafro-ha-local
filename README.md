@@ -66,16 +66,25 @@ python3 -m venv /opt/zafro-cloud/venv
 cp zafro_cloud.py /opt/zafro-cloud/
 ```
 
-### 2. Mosquitto (if you don't already have a broker)
+### 2. Mosquitto + the Home Assistant MQTT integration
 
+If you don't already have an MQTT broker:
 ```bash
 sudo apt install mosquitto mosquitto-clients
 sudo cp deploy/mosquitto-local.conf /etc/mosquitto/conf.d/local.conf
 sudo systemctl restart mosquitto
 ```
-Then add the **MQTT integration** in Home Assistant pointed at this broker
-(`127.0.0.1:1883` if it's on the HA host). If your broker needs auth, set
-`MQTT_USER` / `MQTT_PASS` in the systemd unit (step 4).
+(If you run Home Assistant OS, the **Mosquitto broker** add-on works too — install it
+from **Settings → Add-ons**, then create an MQTT user.)
+
+Now connect Home Assistant to the broker:
+1. **Settings → Devices & Services → Add Integration → MQTT**.
+2. **Broker:** the broker's IP (`127.0.0.1` if it's on the HA host, or your server's
+   LAN IP / `core-mosquitto` for the add-on). **Port:** `1883`.
+3. Username/password only if your broker requires them — if so, also set `MQTT_USER` /
+   `MQTT_PASS` in the systemd unit (step 4) so the bridge can log in too.
+4. Submit. That's all the HA config there is — the AC's entities appear **automatically**
+   via MQTT Discovery once the device connects (step 7); there is **no YAML to write**.
 
 ### 3. Self‑signed certificate
 
@@ -128,9 +137,10 @@ in Home Assistant come alive. Watch `journalctl -u zafro-cloud -f` — you shoul
 
 ---
 
-## Entities created
+## Using it in Home Assistant
 
-All grouped under one **Zafro AC** device in Home Assistant:
+Once the AC connects (step 7), the entities are created automatically and grouped
+under one **Zafro AC** device:
 
 | Entity | Type | Notes |
 |---|---|---|
@@ -142,6 +152,62 @@ All grouped under one **Zafro AC** device in Home Assistant:
 | Current Humidity | sensor | live humidity |
 | Display Light, Child Lock, Mute Beep, Eco, Sleep, Turbo, Vertical Swing, Horizontal Swing | switch | |
 | Water Tank Full | binary_sensor | `problem` class |
+
+> **Why not a single `climate` thermostat card?** These ACs target *temperature* in cool
+> mode but *humidity* in dry mode, which HA's climate card handles awkwardly (it always
+> shows a temperature wheel). Splitting into a Mode select + separate Temperature/Humidity
+> numbers makes each mode's control explicit and always correct. If you prefer the
+> thermostat widget, it's easy to swap the discovery in `on_ha_connect()` back to a
+> `climate` entity.
+
+**Find the device:** **Settings → Devices & Services → Devices → Zafro AC**. Everything is
+on that page and works immediately.
+
+**Add it to a dashboard:** open the device page and click **Add to dashboard**, or edit a
+dashboard → **Add Card** → **By device** → *Zafro AC*. For a clean manual layout, paste
+this card (Edit dashboard → **Add Card** → **Manual**) — adjust the entity ids if your HA
+prefixes them differently (check the device page):
+
+```yaml
+type: entities
+title: Zafro AC
+entities:
+  - entity: select.zafro_ac_mode
+  - entity: number.zafro_ac_target_temperature
+  - entity: number.zafro_ac_target_humidity
+  - entity: select.zafro_ac_fan_speed
+  - type: section
+    label: Status
+  - entity: sensor.zafro_ac_current_temperature
+  - entity: sensor.zafro_ac_current_humidity
+  - entity: binary_sensor.zafro_ac_water_tank_full
+  - type: section
+    label: Options
+  - entity: switch.zafro_ac_vertical_swing
+  - entity: switch.zafro_ac_horizontal_swing
+  - entity: switch.zafro_ac_eco_mode
+  - entity: switch.zafro_ac_sleep_mode
+  - entity: switch.zafro_ac_turbo
+  - entity: switch.zafro_ac_display_light
+  - entity: switch.zafro_ac_child_lock
+  - entity: switch.zafro_ac_mute_beep
+```
+
+**Automations & voice** work like any HA entity — e.g. turn the AC off when everyone
+leaves (`select.zafro_ac_mode` → `off`), notify when **Water Tank Full** turns on, or say
+"set the AC to cool." A handy starter automation:
+
+```yaml
+alias: AC off when nobody home
+triggers:
+  - trigger: state
+    entity_id: zone.home
+    to: "0"
+actions:
+  - action: select.select_option
+    target: { entity_id: select.zafro_ac_mode }
+    data: { option: "off" }
+```
 
 ---
 
