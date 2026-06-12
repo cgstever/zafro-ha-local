@@ -1,0 +1,20 @@
+[Unit]
+Description=Zafro/I4season AC local cloud emulator + Home Assistant MQTT bridge
+After=network-online.target mosquitto.service
+Wants=mosquitto.service
+
+[Service]
+Type=simple
+# Change User to whoever owns /opt/zafro-cloud
+User=nobody
+ExecStart=/opt/zafro-cloud/venv/bin/python /opt/zafro-cloud/zafro_cloud.py
+Restart=on-failure
+RestartSec=5
+# Optional overrides:
+# Environment=MQTT_HOST=127.0.0.1
+# Environment=MQTT_PORT=1883
+# Environment=MQTT_USER=youruser
+# Environment=MQTT_PASS=yourpass
+
+[Install]
+WantedBy=multi-user.target
