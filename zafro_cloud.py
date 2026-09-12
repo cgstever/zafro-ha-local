@@ -139,9 +139,12 @@ def send_to_ac(state_fields):
         return
     payload = json.dumps({"cmd": 6, "sn": None, "user": "ha_bridge", "data": {"state": state_fields}})
     pkt = mk_publish(DEV["req_topic"], payload)
-    if LOOP and AC_OUT:
-        LOOP.call_soon_threadsafe(AC_OUT.put_nowait, pkt)
+    q = AC_OUT   # snapshot: this runs on the paho thread, AC_OUT can change under us
+    if LOOP and q:
+        LOOP.call_soon_threadsafe(q.put_nowait, pkt)
         log.info("-> AC %s", state_fields)
+    else:
+        log.warning("no live AC connection; dropping command %s", state_fields)
 
 # ----------------------------------------------------------------------------
 # Home Assistant (paho) side: MQTT Discovery + command handling
@@ -235,12 +238,20 @@ async def ws_iot(req):
     ws = web.WebSocketResponse(protocols=("mqtt",), compress=False)
     await ws.prepare(req)
     log.info("AC websocket connected")
-    AC_OUT = asyncio.Queue()
+    # Per-connection send queue (issue #1). The AC sometimes opens a NEW websocket
+    # without cleanly closing the old one (Wi-Fi roam, blip, its own re-login), so two
+    # sockets overlap; nginx then reaps the abandoned one proxy_read_timeout later --
+    # an hour with the sample config. While this queue was a bare global, that late
+    # teardown set it to None and killed outbound for the LIVE connection: the AC kept
+    # publishing so HA kept updating, but every command silently went nowhere until the
+    # AC was power-cycled. Scope it per connection and only clear it if it is still ours.
+    out_q = asyncio.Queue()
+    AC_OUT = out_q
     buf = bytearray()
 
     async def sender():
         while not ws.closed:
-            pkt = await AC_OUT.get()
+            pkt = await out_q.get()   # our own queue, never the global
             await ws.send_bytes(pkt)
 
     send_task = asyncio.create_task(sender())
@@ -301,7 +312,8 @@ async def ws_iot(req):
                     await ws.send_bytes(mk_pingresp())
     finally:
         send_task.cancel()
-        AC_OUT = None
+        if AC_OUT is out_q:       # a newer connection may already own the global
+            AC_OUT = None
         log.info("AC websocket closed")
     return ws
 
