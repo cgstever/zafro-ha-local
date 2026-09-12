@@ -232,6 +232,41 @@ These cost real debugging time; they're baked into the provided configs:
 
 ---
 
+## Troubleshooting
+
+### Verbose protocol logging
+
+Set `ZAFRO_DEBUG=1` to log every MQTT frame the AC sends — raw frame type/length/hex,
+plus decoded `CONNECT` / `SUBSCRIBE` / `PUBLISH` (topic and payload). Off by default
+because it's noisy (roughly a thousand lines an hour), but it is exactly what's useful
+attached to a bug report.
+
+In the systemd unit:
+
+```ini
+Environment=ZAFRO_DEBUG=1
+```
+
+then `sudo systemctl daemon-reload && sudo systemctl restart zafro-cloud` and watch with
+`journalctl -u zafro-cloud -f`.
+
+### Commands from HA do nothing, but the AC still updates HA
+
+State flows in (change something on the unit or the remote and HA follows) but nothing
+you do in HA reaches the AC. Check:
+
+```bash
+journalctl -u zafro-cloud | grep -E "HA cmd|-> AC"
+```
+
+Every `HA cmd ...` should be followed by a matching `-> AC ...`. If it isn't, the bridge
+has no live socket to the AC and will say so (`no live AC connection; dropping command`).
+Restarting the bridge (`sudo systemctl restart zafro-cloud`) reconnects without having to
+power-cycle the AC. A bug that caused exactly this after the AC reconnected was fixed in
+[#1](https://github.com/cgstever/zafro-ha-local/issues/1) — make sure you're up to date.
+
+---
+
 ## Protocol
 
 Full reverse‑engineered protocol and the complete field map are in

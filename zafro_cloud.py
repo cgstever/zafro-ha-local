@@ -18,6 +18,9 @@ Config (all optional, via environment variables):
   MQTT_USER / MQTT_PASS  broker auth, if you set any      (default none)
   LISTEN_PORT            plain-HTTP port nginx proxies to (default 8765)
   HA_DISCOVERY_PREFIX    HA MQTT discovery prefix         (default homeassistant)
+  ZAFRO_DEBUG            1 = log every MQTT frame from the AC (default off).
+                         Noisy (~1k lines/hour) but it is what you want attached
+                         to a bug report -- see README "Troubleshooting".
 
 See README.md for the full setup (DNS redirect, nginx TLS, systemd, HA).
 License: MIT.
@@ -32,6 +35,7 @@ MQTT_USER = os.environ.get("MQTT_USER") or None
 MQTT_PASS = os.environ.get("MQTT_PASS") or None
 LISTEN_PORT = int(os.environ.get("LISTEN_PORT", "8765"))
 HA_PREFIX = os.environ.get("HA_DISCOVERY_PREFIX", "homeassistant")
+DEBUG = os.environ.get("ZAFRO_DEBUG", "").strip().lower() not in ("", "0", "false", "no")
 
 NODE = "zafro_ac"
 BASE = f"zafro/{NODE}"
@@ -40,6 +44,7 @@ DEVICE = {"identifiers": ["zafro_ac"], "name": "Zafro AC",
 
 # Extra on/off controls exposed as HA switches: (topic suffix, AC field, name, icon)
 SWITCHES = [
+    ("power", "poweron", "Power", "mdi:power"),
     ("light", "lighton", "Display Light", "mdi:lightbulb"),
     ("childlock", "childlockon", "Child Lock", "mdi:lock"),
     ("mute", "muteon", "Mute Beep", "mdi:volume-off"),
@@ -52,6 +57,10 @@ SWITCHES = [
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 log = logging.getLogger("zafro")
+if DEBUG:
+    # Raise only OUR logger, not root -- otherwise aiohttp and paho start emitting
+    # their own debug output too and drown the frames you actually came for.
+    log.setLevel(logging.DEBUG)
 
 # ----------------------------------------------------------------------------
 # Minimal MQTT 3.1/3.1.1 codec (only the packet types the AC uses)
@@ -271,7 +280,15 @@ async def ws_iot(req):
                 pkt = bytes(buf[:hdr + rl])
                 body = pkt[hdr:]
                 del buf[:hdr + rl]
+                log.debug("RX type=0x%02x len=%d hex=%s", ptype, len(pkt), pkt[:40].hex())
                 if ptype == 0x10:                                  # CONNECT
+                    if DEBUG:
+                        try:
+                            pnl = struct.unpack(">H", body[:2])[0]
+                            log.debug("AC CONNECT proto=%s level=%d",
+                                      body[2:2+pnl].decode(errors="replace"), body[2+pnl])
+                        except Exception:
+                            log.debug("AC CONNECT (unparsed header)")
                     await ws.send_bytes(mk_connack())
                 elif ptype == 0x80:                                # SUBSCRIBE
                     pid = struct.unpack(">H", body[:2])[0]
@@ -280,6 +297,7 @@ async def ws_iot(req):
                         tl = struct.unpack(">H", body[i:i+2])[0]
                         i += 2 + tl + 1
                         n += 1
+                    log.debug("AC SUBSCRIBE(%d) -> SUBACK", n)
                     await ws.send_bytes(mk_suback(pid, n))
                 elif ptype == 0x30:                                # PUBLISH (state from AC)
                     qos = (flags0 >> 1) & 3
@@ -291,6 +309,7 @@ async def ws_iot(req):
                         pid = struct.unpack(">H", body[off:off+2])[0]
                         off += 2
                     payload = body[off:]
+                    log.debug("AC PUBLISH %s %s", topic, payload[:600])
                     # Learn the device's tenant + SN from its own topics (dev/<tenant>/<sn>/...)
                     if DEV["sn"] is None and "/" in topic:
                         parts = topic.split("/")
@@ -310,6 +329,10 @@ async def ws_iot(req):
                         await ws.send_bytes(mk_puback(pid))
                 elif ptype == 0xC0:                                # PINGREQ
                     await ws.send_bytes(mk_pingresp())
+                elif ptype == 0xE0:                                # DISCONNECT
+                    # A clean MQTT disconnect, as opposed to the socket just dying.
+                    # Worth distinguishing when chasing reconnect bugs (see #1).
+                    log.info("AC DISCONNECT")
     finally:
         send_task.cancel()
         if AC_OUT is out_q:       # a newer connection may already own the global
